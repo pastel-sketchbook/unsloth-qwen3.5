@@ -1,0 +1,56 @@
+version: 3
+
+tasks:
+  run:python:
+    desc: Run the Python screen capture script
+    cmds:
+      - uv run qwen35_screen_capture.py
+
+  run:rust:
+    desc: Run the Rust screen describer
+    cmds:
+      - cargo run --manifest-path screen_describer/Cargo.toml
+
+  fmt:rust:
+    desc: Format Rust code
+    cmds:
+      - cargo fmt --manifest-path screen_describer/Cargo.toml
+
+  fmt:python:
+    desc: Format Python code
+    cmds:
+      - ruff format .
+
+  fmt:
+    desc: Format all code
+    deps:
+      - fmt:rust
+      - fmt:python
+
+  lint:rust:
+    desc: Lint Rust code
+    cmds:
+      - cargo clippy --manifest-path screen_describer/Cargo.toml
+
+  lint:python:
+    desc: Lint Python code
+    cmds:
+      - ruff check .
+
+  lint:
+    desc: Lint all code
+    deps:
+      - lint:rust
+      - lint:python
+
+  loc:
+    desc: Count lines of code with tokei
+    cmds:
+      - tokei .
+
+  check:
+    desc: Run all checks (format, lint, loc)
+    deps:
+      - fmt
+      - lint
+      - loc
