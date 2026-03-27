@@ -158,7 +158,7 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
     // Build prompt with media marker
     let marker = mtmd_default_marker();
     let prompt = format!(
-        "<|im_start|>user\n{marker}\nDescribe this screenshot in detail. What is taking place? What applications are open?<|im_end|>\n<|im_start|>assistant\n"
+        "<|im_start|>user\n{marker}\nDescribe what you see on this screen. What is shown, what is happening, and what elements are visible?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
     );
 
     let text_input = MtmdInputText {
@@ -197,6 +197,7 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
     let mut output = String::new();
     let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(512, 1);
     let mut n_cur = n_past;
+    let mut in_think = false;
 
     info!("[AI] Generating description...");
 
@@ -213,8 +214,18 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
 
         let piece = model.token_to_piece(token, &mut decoder, true, None)?;
         output.push_str(&piece);
-        print!("{piece}");
-        std::io::stdout().flush()?;
+
+        // Suppress live streaming of <think> blocks
+        if output.ends_with("<think>") {
+            in_think = true;
+        }
+        if !in_think {
+            print!("{piece}");
+            std::io::stdout().flush()?;
+        }
+        if output.ends_with("</think>") {
+            in_think = false;
+        }
 
         batch.clear();
         batch.add(token, n_cur, &[0], true)?;

@@ -96,4 +96,4 @@ Key changes:
 - After `eval_chunks(logits_last: true)`, the first sample must use logits index `-1` (last token from the internal batch), not `0`.
 - A repetition penalty sampler (`LlamaSampler::penalties`) is essential for small models like Qwen3.5-0.8B to prevent degenerate looping. A window of 512 tokens with a penalty of 1.5 was needed; the initial 64/1.3 was too weak.
 - Raw prompts without chat-template markers (`<|im_start|>`/`<|im_end|>`) cause the model to hallucinate and repeat. Always wrap in the expected chat format.
-- Qwen3.5 is a "thinking" model that emits `<think>…</think>` blocks before the actual answer. These must be stripped from user-facing output via post-processing.
+- Qwen3.5 is a "thinking" model that emits `<think>…</think>` blocks before the actual answer. The `/no_think` prompt suffix does not work reliably with this model. The effective approach is to pre-fill the assistant turn with an empty think block (`<think>\n\n</think>\n\n`) so the model skips reasoning entirely. A fallback `strip_think_blocks` post-processor handles any residual think content in both the live stream and final display.
