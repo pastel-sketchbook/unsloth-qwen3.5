@@ -158,7 +158,7 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
     // Build prompt with media marker
     let marker = mtmd_default_marker();
     let prompt = format!(
-        "{marker}\nDescribe this screenshot in detail. What is taking place? What applications are open?"
+        "<|im_start|>user\n{marker}\nDescribe this screenshot in detail. What is taking place? What applications are open?<|im_end|>\n<|im_start|>assistant\n"
     );
 
     let text_input = MtmdInputText {
@@ -185,9 +185,9 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         .with_context(|| "Failed to evaluate multimodal chunks")?;
 
     // Generate tokens
-    let max_tokens = 4096_i32;
+    let max_tokens = 1024_i32;
     let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::penalties(64, 1.3, 0.0, 0.0),
+        LlamaSampler::penalties(512, 1.5, 0.0, 0.0),
         LlamaSampler::temp(0.7),
         LlamaSampler::top_p(0.8, 1),
         LlamaSampler::dist(1234),
@@ -228,11 +228,29 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
     }
 
     println!();
+
+    // Strip <think>...</think> blocks (Qwen3.5 thinking tokens)
+    let display_output = strip_think_blocks(&output);
+
     println!("\n{}", "=".repeat(60));
     println!("[DESC] SCREENSHOT DESCRIPTION:");
     println!("{}", "=".repeat(60));
-    termimad::print_text(&output);
+    termimad::print_text(&display_output);
     println!("{}\n", "=".repeat(60));
 
     Ok(())
+}
+
+fn strip_think_blocks(text: &str) -> String {
+    let mut result = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        result.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => return result.trim().to_string(),
+        }
+    }
+    result.push_str(rest);
+    result.trim().to_string()
 }

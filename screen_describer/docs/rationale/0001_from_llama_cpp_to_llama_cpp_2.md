@@ -64,6 +64,8 @@ Key changes:
 - **Multimodal tokenization** via `mtmd_ctx.tokenize()` replaces the JSON content array.
 - **`eval_chunks`** handles both text token decoding and image embedding encoding in one call.
 - **Token generation loop** uses `LlamaSampler` with repetition penalty, temp, and top-p — all in-process.
+- **Chat template wrapping** — the prompt is wrapped in `<|im_start|>user`/`<|im_end|>` markers so the model generates a proper assistant response.
+- **Think-block stripping** — Qwen3.5 emits `<think>…</think>` reasoning tokens; these are stripped before display.
 
 ## Dependencies Changed
 
@@ -92,4 +94,6 @@ Key changes:
 ## Lessons Learned
 
 - After `eval_chunks(logits_last: true)`, the first sample must use logits index `-1` (last token from the internal batch), not `0`.
-- A repetition penalty sampler (`LlamaSampler::penalties`) is essential for small models like Qwen3.5-0.8B to prevent degenerate looping.
+- A repetition penalty sampler (`LlamaSampler::penalties`) is essential for small models like Qwen3.5-0.8B to prevent degenerate looping. A window of 512 tokens with a penalty of 1.5 was needed; the initial 64/1.3 was too weak.
+- Raw prompts without chat-template markers (`<|im_start|>`/`<|im_end|>`) cause the model to hallucinate and repeat. Always wrap in the expected chat format.
+- Qwen3.5 is a "thinking" model that emits `<think>…</think>` blocks before the actual answer. These must be stripped from user-facing output via post-processing.
