@@ -5,21 +5,21 @@
  */
 
 use anyhow::{Context, Result};
-use std::fs;
-use std::io::Write;
-use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
-use std::pin::pin;
 use image::imageops::FilterType;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::mtmd::{
     MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText, mtmd_default_marker,
 };
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::send_logs_to_tracing;
+use std::fs;
+use std::io::Write;
+use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
+use std::pin::pin;
 use tracing::info;
 
 const MODEL_REPO: &str = "unsloth/Qwen3.5-0.8B-GGUF";
@@ -61,8 +61,7 @@ fn ensure_model() -> Result<(PathBuf, PathBuf)> {
             MODEL_REPO, filename
         );
         let dest = dir.join(filename);
-        download_file(&url, &dest)
-            .with_context(|| format!("Failed to download {filename}"))?;
+        download_file(&url, &dest).with_context(|| format!("Failed to download {filename}"))?;
     }
 
     info!("[OK] Model downloaded to {}", dir.display());
@@ -139,8 +138,7 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         .with_context(|| "Failed to load GGUF model")?;
 
     // Create llama context
-    let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(NonZeroU32::new(8192));
+    let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(8192));
     let mut ctx = model
         .new_context(&backend, ctx_params)
         .with_context(|| "Failed to create llama context")?;
@@ -152,8 +150,8 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         .with_context(|| "Failed to init multimodal context")?;
 
     // Create bitmap from image data
-    let bitmap = MtmdBitmap::from_image_data(w, h, &raw_rgb)
-        .with_context(|| "Failed to create bitmap")?;
+    let bitmap =
+        MtmdBitmap::from_image_data(w, h, &raw_rgb).with_context(|| "Failed to create bitmap")?;
 
     // Build prompt with media marker
     let marker = mtmd_default_marker();

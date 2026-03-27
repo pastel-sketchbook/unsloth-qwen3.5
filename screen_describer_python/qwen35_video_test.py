@@ -15,7 +15,7 @@ from pathlib import Path
 MODEL_REPO = "unsloth/Qwen3.5-0.8B-GGUF"
 MODEL_FILE = "Qwen3.5-0.8B-Q4_K_M.gguf"
 MMPROJ_FILE = "mmproj-F16.gguf"
-MODEL_DIR = Path(__file__).resolve().parent / "Qwen3.5-0.8B-GGUF"
+MODEL_DIR = Path(__file__).resolve().parent.parent / "Qwen3.5-0.8B-GGUF"
 YT_VIDEO_ID = "V2cZl5s4EKU"
 PORT = 8001
 FRAMES_DIR = Path("/tmp/qwen35_frames")

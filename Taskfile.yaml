@@ -3,6 +3,7 @@ version: 3
 tasks:
   run:python:
     desc: Run the Python screen capture script
+    dir: screen_describer_python
     cmds:
       - uv run qwen35_screen_capture.py
 
@@ -11,6 +12,24 @@ tasks:
     cmds:
       - cargo run --manifest-path screen_describer/Cargo.toml
 
+  run:zig:
+    desc: Run the Zig screen describer
+    dir: screen_describer_zig
+    cmds:
+      - zig build run
+
+  build:zig:
+    desc: Build the Zig screen describer
+    dir: screen_describer_zig
+    cmds:
+      - zig build
+
+  fmt:zig:
+    desc: Format Zig code
+    dir: screen_describer_zig
+    cmds:
+      - zig fmt src/main.zig
+
   fmt:rust:
     desc: Format Rust code
     cmds:
@@ -18,6 +37,7 @@ tasks:
 
   fmt:python:
     desc: Format Python code
+    dir: screen_describer_python
     cmds:
       - ruff format .
 
@@ -26,6 +46,7 @@ tasks:
     deps:
       - fmt:rust
       - fmt:python
+      - fmt:zig
 
   lint:rust:
     desc: Lint Rust code
@@ -34,6 +55,7 @@ tasks:
 
   lint:python:
     desc: Lint Python code
+    dir: screen_describer_python
     cmds:
       - ruff check .
 
