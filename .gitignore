@@ -4,3 +4,7 @@
 /screen_describer_python/video_text_output.md
 /screen_describer_zig/.zig-cache/
 /screen_describer_zig/zig-out/
+
+# Environment files
+.env
+.env.*

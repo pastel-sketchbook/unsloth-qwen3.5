@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use image::imageops::FilterType;
+use llama_cpp_2::LogOptions;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::LlamaModel;
@@ -27,7 +28,7 @@ const MMPROJ_FILE: &str = "mmproj-F16.gguf";
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    send_logs_to_tracing(Default::default());
+    send_logs_to_tracing(LogOptions::default());
 
     let (model_path, mmproj_path) = ensure_model()?;
     let img_path = find_latest_screenshot()?;
@@ -38,6 +39,7 @@ fn main() -> Result<()> {
 
 fn model_dir() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Safety: CARGO_MANIFEST_DIR always points inside a workspace, so parent() is guaranteed.
     manifest.parent().unwrap().join("Qwen3.5-0.8B-GGUF")
 }
 
@@ -55,10 +57,7 @@ fn ensure_model() -> Result<(PathBuf, PathBuf)> {
     fs::create_dir_all(&dir)?;
 
     for filename in [MODEL_FILE, MMPROJ_FILE] {
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            MODEL_REPO, filename
-        );
+        let url = format!("https://huggingface.co/{MODEL_REPO}/resolve/main/{filename}",);
         let dest = dir.join(filename);
         download_file(&url, &dest).with_context(|| format!("Failed to download {filename}"))?;
     }
@@ -68,12 +67,14 @@ fn ensure_model() -> Result<(PathBuf, PathBuf)> {
 }
 
 fn download_file(url: &str, dest: &Path) -> Result<()> {
-    let mut resp = reqwest::blocking::get(url)?;
+    let mut resp = reqwest::blocking::get(url).with_context(|| format!("requesting {url}"))?;
     if !resp.status().is_success() {
         anyhow::bail!("Download failed: {}", resp.status());
     }
-    let mut file = fs::File::create(dest)?;
-    resp.copy_to(&mut file)?;
+    let mut file =
+        fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+    resp.copy_to(&mut file)
+        .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 
@@ -83,7 +84,7 @@ fn find_latest_screenshot() -> Result<PathBuf> {
     info!("[SCAN] Scanning {} for screenshots...", desktop.display());
 
     let mut images: Vec<PathBuf> = fs::read_dir(&desktop)?
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
@@ -104,24 +105,38 @@ fn find_latest_screenshot() -> Result<PathBuf> {
             .and_then(|m| m.modified().ok())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     });
+    // Safety: `images` is non-empty — checked and bailed above.
     let latest = images.pop().unwrap();
     info!("[OK] Selected: {}", latest.display());
     Ok(latest)
 }
 
+fn resize_for_model(img: image::DynamicImage, max_dim: u32) -> image::DynamicImage {
+    if img.width() <= max_dim && img.height() <= max_dim {
+        return img;
+    }
+    // Image dimensions are bounded by max_dim (1024), so f32 precision loss
+    // and truncation are harmless for resize calculations.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let (nw, nh) = {
+        let ratio = max_dim as f32 / img.width().max(img.height()) as f32;
+        (
+            (img.width() as f32 * ratio) as u32,
+            (img.height() as f32 * ratio) as u32,
+        )
+    };
+    info!("[RESIZE] {}x{} → {}x{}", img.width(), img.height(), nw, nh);
+    img.resize_exact(nw, nh, FilterType::Lanczos3)
+}
+
 fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Result<()> {
     // Resize image for model compatibility
     let img = image::open(img_path)?;
-    let max_dim = 1024;
-    let img = if img.width() > max_dim || img.height() > max_dim {
-        let ratio = max_dim as f32 / img.width().max(img.height()) as f32;
-        let nw = (img.width() as f32 * ratio) as u32;
-        let nh = (img.height() as f32 * ratio) as u32;
-        info!("[RESIZE] {}x{} → {}x{}", img.width(), img.height(), nw, nh);
-        img.resize_exact(nw, nh, FilterType::Lanczos3)
-    } else {
-        img
-    };
+    let img = resize_for_model(img, 1024);
 
     // Convert to RGB bytes for MtmdBitmap
     let rgb = img.to_rgb8();
@@ -143,7 +158,9 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         .with_context(|| "Failed to create llama context")?;
 
     // Init multimodal context
-    let mmproj_str = mmproj_path.to_str().unwrap();
+    let mmproj_str = mmproj_path
+        .to_str()
+        .context("mmproj path is not valid UTF-8")?;
     let mtmd_params = MtmdContextParams::default();
     let mtmd_ctx = MtmdContext::init_from_file(mmproj_str, &model, &mtmd_params)
         .with_context(|| "Failed to init multimodal context")?;
