@@ -16,7 +16,6 @@ use llama_cpp_2::mtmd::{
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::send_logs_to_tracing;
 use std::fs;
-use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
@@ -195,7 +194,7 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
     let mut output = String::new();
     let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(512, 1);
     let mut n_cur = n_past;
-    let mut in_think = false;
+    let mut tok_count = 0u32;
 
     info!("[AI] Generating description...");
 
@@ -213,16 +212,9 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         let piece = model.token_to_piece(token, &mut decoder, true, None)?;
         output.push_str(&piece);
 
-        // Suppress live streaming of <think> blocks
-        if output.ends_with("<think>") {
-            in_think = true;
-        }
-        if !in_think {
-            print!("{piece}");
-            std::io::stdout().flush()?;
-        }
-        if output.ends_with("</think>") {
-            in_think = false;
+        tok_count += 1;
+        if tok_count.is_multiple_of(32) {
+            eprint!(".");
         }
 
         batch.clear();
@@ -236,7 +228,8 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         logits_idx = 0;
     }
 
-    println!();
+    eprintln!();
+    info!("[OK] Generated {} tokens", tok_count);
 
     // Strip <think>...</think> blocks (Qwen3.5 thinking tokens)
     let display_output = strip_think_blocks(&output);

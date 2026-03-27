@@ -235,16 +235,13 @@ fn describeScreen(allocator: std.mem.Allocator, model_path: [:0]const u8, mmproj
 
     const vocab = c.llama_model_get_vocab(model);
 
-    var stdout_buf: [4096]u8 = undefined;
-    var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
-
     log("[AI] Generating description...", .{});
 
     var batch = c.llama_batch_init(512, 0, 1);
     defer c.llama_batch_free(batch);
     var n_cur = n_past;
     var logits_idx: i32 = -1;
-    var in_think = false;
+    var tok_count: usize = 0;
 
     for (0..max_tokens) |_| {
         const token = c.llama_sampler_sample(sampler, ctx, logits_idx);
@@ -257,18 +254,10 @@ fn describeScreen(allocator: std.mem.Allocator, model_path: [:0]const u8, mmproj
         if (piece_len > 0) {
             const piece = piece_buf[0..@intCast(piece_len)];
             try output.appendSlice(allocator, piece);
-
-            if (std.mem.endsWith(u8, output.items, "<think>")) {
-                in_think = true;
-            }
-            if (!in_think) {
-                try stdout_w.interface.writeAll(piece);
-                try stdout_w.interface.flush();
-            }
-            if (std.mem.endsWith(u8, output.items, "</think>")) {
-                in_think = false;
-            }
         }
+
+        tok_count += 1;
+        if (tok_count % 32 == 0) logProgress(".");
 
         batch.n_tokens = 0;
         batch.token[0] = token;
@@ -288,10 +277,13 @@ fn describeScreen(allocator: std.mem.Allocator, model_path: [:0]const u8, mmproj
         logits_idx = 0;
     }
 
-    try stdout_w.interface.writeByte('\n');
-    try stdout_w.interface.flush();
+    log("", .{}); // newline after progress dots
+    log("[OK] Generated {d} tokens", .{tok_count});
 
     const display = try stripThinkBlocks(allocator, output.items);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_w = std.fs.File.stdout().writer(&stdout_buf);
 
     const sep = "=" ** 60;
     try stdout_w.interface.print("\n{s}\n[DESC] SCREENSHOT DESCRIPTION:\n{s}\n", .{ sep, sep });
@@ -453,6 +445,13 @@ fn isHorizontalRule(line: []const u8) bool {
         if (b != ch and b != ' ') return false;
     }
     return true;
+}
+
+fn logProgress(msg: []const u8) void {
+    var buf: [256]u8 = undefined;
+    var w = std.fs.File.stderr().writer(&buf);
+    w.interface.writeAll(msg) catch {};
+    w.interface.flush() catch {};
 }
 
 fn log(comptime fmt: []const u8, args: anytype) void {
