@@ -1,53 +1,39 @@
-#!/usr/bin/env -S cargo +stable run
 /*
- * Screen Describer Utility in Rust
- * Port of qwen35_screen_capture.py to Rust
+ * Screen Describer — direct GGUF inference via llama-cpp-2 (no llama-server)
+ *
+ * Uses the `mtmd` feature for multimodal (vision) support.
  */
 
 use anyhow::{Context, Result};
 use std::fs;
-use std::io::{Cursor, Read, Write};
+use std::io::Write;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::Duration;
-
-use base64::{Engine as _, engine::general_purpose};
-use image::DynamicImage;
-use image::codecs::jpeg::JpegEncoder;
+use std::pin::pin;
 use image::imageops::FilterType;
-use reqwest::blocking::Client;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
-use serde_json::json;
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::mtmd::{
+    MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText, mtmd_default_marker,
+};
+use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::send_logs_to_tracing;
 use tracing::info;
 
 const MODEL_REPO: &str = "unsloth/Qwen3.5-0.8B-GGUF";
 const MODEL_FILE: &str = "Qwen3.5-0.8B-Q4_K_M.gguf";
 const MMPROJ_FILE: &str = "mmproj-F16.gguf";
-const PORT: u16 = 8001;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    send_logs_to_tracing(Default::default());
 
-    check_tools()?;
-    let (model_path, mmproj_path) = download_model()?;
-    let _server = start_server(&model_path, &mmproj_path)?;
+    let (model_path, mmproj_path) = ensure_model()?;
+    let img_path = find_latest_screenshot()?;
+    describe_screen(&model_path, &mmproj_path, &img_path)?;
 
-    let img_path = capture_screen()?;
-    describe_screen(&img_path)?;
-
-    Ok(())
-}
-
-fn check_tools() -> Result<()> {
-    if Command::new("llama-server")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        anyhow::bail!("[ERROR] 'llama-server' not found. Install it first.");
-    }
-    info!("[OK] All tools available");
     Ok(())
 }
 
@@ -56,253 +42,197 @@ fn model_dir() -> PathBuf {
     manifest.parent().unwrap().join("Qwen3.5-0.8B-GGUF")
 }
 
-fn download_model() -> Result<(PathBuf, PathBuf)> {
-    let model_dir = model_dir();
-    let model_path = model_dir.join(MODEL_FILE);
-    let mmproj_path = model_dir.join(MMPROJ_FILE);
+fn ensure_model() -> Result<(PathBuf, PathBuf)> {
+    let dir = model_dir();
+    let model_path = dir.join(MODEL_FILE);
+    let mmproj_path = dir.join(MMPROJ_FILE);
 
     if model_path.exists() && mmproj_path.exists() {
-        info!("[OK] Model already downloaded at {}", model_dir.display());
+        info!("[OK] Model already present at {}", dir.display());
         return Ok((model_path, mmproj_path));
     }
 
     info!("[DL] Downloading {} (Q4_K_M + mmproj)...", MODEL_REPO);
-    fs::create_dir_all(&model_dir)?;
+    fs::create_dir_all(&dir)?;
 
-    for filename in [MODEL_FILE, MMPROJ_FILE].iter() {
+    for filename in [MODEL_FILE, MMPROJ_FILE] {
         let url = format!(
             "https://huggingface.co/{}/resolve/main/{}",
             MODEL_REPO, filename
         );
-        let dest = model_dir.join(filename);
-        download_file(&url, &dest).with_context(|| format!("Failed to download {}", filename))?;
+        let dest = dir.join(filename);
+        download_file(&url, &dest)
+            .with_context(|| format!("Failed to download {filename}"))?;
     }
 
-    info!("[OK] Model downloaded to {}", model_dir.display());
+    info!("[OK] Model downloaded to {}", dir.display());
     Ok((model_path, mmproj_path))
 }
 
 fn download_file(url: &str, dest: &Path) -> Result<()> {
-    let mut response = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?
-        .get(url)
-        .send()?;
-
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "[ERROR] Failed to download from {}: {}",
-            url,
-            response.status()
-        );
+    let mut resp = reqwest::blocking::get(url)?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Download failed: {}", resp.status());
     }
-
     let mut file = fs::File::create(dest)?;
-    let mut content = Vec::new();
-    response.read_to_end(&mut content)?;
-    file.write_all(&content)?;
+    resp.copy_to(&mut file)?;
     Ok(())
 }
 
-fn start_server(model_path: &Path, mmproj_path: &Path) -> Result<Option<std::process::Child>> {
-    if is_server_ready()? {
-        info!("[OK] llama-server is already running");
-        return Ok(None);
-    }
+fn find_latest_screenshot() -> Result<PathBuf> {
+    let desktop =
+        dirs::desktop_dir().ok_or_else(|| anyhow::anyhow!("Could not locate desktop dir"))?;
+    info!("[SCAN] Scanning {} for screenshots...", desktop.display());
 
-    info!("[RUN] Starting llama-server on port {}...", PORT);
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/llama_server.log")?;
-
-    let mut child = Command::new("llama-server")
-        .arg("--model")
-        .arg(model_path)
-        .arg("--mmproj")
-        .arg(mmproj_path)
-        .arg("--ctx-size")
-        .arg("8192")
-        .arg("--port")
-        .arg(PORT.to_string())
-        .arg("--jinja")
-        .stdout(Stdio::from(log_file.try_clone()?))
-        .stderr(Stdio::from(log_file))
-        .spawn()?;
-
-    for _ in 0..30 {
-        thread::sleep(Duration::from_secs(2));
-        if is_server_ready()? {
-            info!("[OK] llama-server is ready");
-            return Ok(Some(child));
-        }
-    }
-
-    child.kill()?;
-    anyhow::bail!("[ERROR] llama-server failed to start within 60s");
-}
-
-fn is_server_ready() -> Result<bool> {
-    match Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?
-        .get(format!("http://localhost:{}/health", PORT))
-        .send()
-    {
-        Ok(response) => Ok(response.status().is_success()),
-        Err(_) => Ok(false),
-    }
-}
-
-fn capture_screen() -> Result<PathBuf> {
-    let desktop = dirs::desktop_dir()
-        .ok_or_else(|| anyhow::anyhow!("[ERROR] Could not locate desktop directory"))?;
-    info!(
-        "[SCAN] Scanning {} for screenshot files...",
-        desktop.display()
-    );
-
-    let mut images = Vec::new();
-    for entry in fs::read_dir(&desktop)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            let ext = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if ext == "png" || ext == "jpg" || ext == "jpeg" {
-                images.push(path);
-            }
-        }
-    }
+    let mut images: Vec<PathBuf> = fs::read_dir(&desktop)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && matches!(
+                    p.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                    "png" | "jpg" | "jpeg"
+                )
+        })
+        .collect();
 
     if images.is_empty() {
-        anyhow::bail!(
-            "[ERROR] No .png or .jpg image files found on your Desktop ({}).",
-            desktop.display()
-        );
+        anyhow::bail!("No image files found on Desktop ({})", desktop.display());
     }
 
-    let latest_img = images
-        .into_iter()
-        .max_by_key(|p| {
-            p.metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        })
-        .ok_or_else(|| anyhow::anyhow!("[ERROR] Failed to determine latest image"))?;
-
-    info!("[OK] Selected latest image: {}", latest_img.display());
-    Ok(latest_img)
+    images.sort_by_key(|p| {
+        p.metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    let latest = images.pop().unwrap();
+    info!("[OK] Selected: {}", latest.display());
+    Ok(latest)
 }
 
-fn describe_screen(img_path: &Path) -> Result<()> {
+fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Result<()> {
+    // Resize image for model compatibility
     let img = image::open(img_path)?;
     let max_dim = 1024;
     let img = if img.width() > max_dim || img.height() > max_dim {
         let ratio = max_dim as f32 / img.width().max(img.height()) as f32;
-        let new_width = (img.width() as f32 * ratio) as u32;
-        let new_height = (img.height() as f32 * ratio) as u32;
-        info!(
-            "[RESIZE] Resizing {}x{} → {}x{} for model compatibility",
-            img.width(),
-            img.height(),
-            new_width,
-            new_height
-        );
-        DynamicImage::ImageRgb8(
-            img.resize_exact(new_width, new_height, FilterType::Lanczos3)
-                .into(),
-        )
+        let nw = (img.width() as f32 * ratio) as u32;
+        let nh = (img.height() as f32 * ratio) as u32;
+        info!("[RESIZE] {}x{} → {}x{}", img.width(), img.height(), nw, nh);
+        img.resize_exact(nw, nh, FilterType::Lanczos3)
     } else {
-        DynamicImage::ImageRgb8(img.to_rgb8())
+        img
     };
 
-    let mut buf = Vec::new();
-    let mut cursor = Cursor::new(&mut buf);
-    let encoder = JpegEncoder::new_with_quality(&mut cursor, 85);
-    img.write_with_encoder(encoder)?;
-    let b64 = general_purpose::STANDARD.encode(&buf);
-    info!(
-        "[SIZE] Image payload size: {} KB (base64)",
-        b64.len() / 1024
+    // Convert to RGB bytes for MtmdBitmap
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let raw_rgb = rgb.into_raw();
+
+    // Init backend & load model
+    let backend = LlamaBackend::init()?;
+    let model_params = pin!(LlamaModelParams::default());
+
+    info!("[LOAD] Loading model...");
+    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
+        .with_context(|| "Failed to load GGUF model")?;
+
+    // Create llama context
+    let ctx_params = LlamaContextParams::default()
+        .with_n_ctx(NonZeroU32::new(8192));
+    let mut ctx = model
+        .new_context(&backend, ctx_params)
+        .with_context(|| "Failed to create llama context")?;
+
+    // Init multimodal context
+    let mmproj_str = mmproj_path.to_str().unwrap();
+    let mtmd_params = MtmdContextParams::default();
+    let mtmd_ctx = MtmdContext::init_from_file(mmproj_str, &model, &mtmd_params)
+        .with_context(|| "Failed to init multimodal context")?;
+
+    // Create bitmap from image data
+    let bitmap = MtmdBitmap::from_image_data(w, h, &raw_rgb)
+        .with_context(|| "Failed to create bitmap")?;
+
+    // Build prompt with media marker
+    let marker = mtmd_default_marker();
+    let prompt = format!(
+        "{marker}\nDescribe this screenshot in detail. What is taking place? What applications are open?"
     );
 
-    let content = json!([
-        {
-            "type": "image_url",
-            "image_url": {"url": format!("data:image/jpeg;base64,{}", b64)}
-        },
-        {
-            "type": "text",
-            "text": "Describe this screenshot in detail. What is taking place? What applications are open?"
-        }
+    let text_input = MtmdInputText {
+        text: prompt,
+        add_special: true,
+        parse_special: true,
+    };
+
+    // Tokenize text + image into chunks
+    let chunks = mtmd_ctx
+        .tokenize(text_input, &[&bitmap])
+        .with_context(|| "Failed to tokenize multimodal input")?;
+
+    info!(
+        "[AI] Processing {} chunks ({} tokens)...",
+        chunks.len(),
+        chunks.total_tokens()
+    );
+
+    // Evaluate all chunks (text + image embeddings)
+    let n_batch = 2048;
+    let n_past = chunks
+        .eval_chunks(&mtmd_ctx, &ctx, 0, 0, n_batch, true)
+        .with_context(|| "Failed to evaluate multimodal chunks")?;
+
+    // Generate tokens
+    let max_tokens = 4096_i32;
+    let mut sampler = LlamaSampler::chain_simple([
+        LlamaSampler::penalties(64, 1.3, 0.0, 0.0),
+        LlamaSampler::temp(0.7),
+        LlamaSampler::top_p(0.8, 1),
+        LlamaSampler::dist(1234),
     ]);
 
-    info!("[AI] Analyzing screenshot with Qwen3.5-0.8B...");
-    let client = Client::builder()
-        .timeout(Duration::from_secs(180))
-        .build()?;
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
+    let mut output = String::new();
+    let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(512, 1);
+    let mut n_cur = n_past;
 
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    info!("[AI] Generating description...");
 
-    let resp = client
-        .post(format!("http://localhost:{}/v1/chat/completions", PORT))
-        .headers(headers)
-        .body(
-            json!({
-                "model": "qwen3.5-0.8b",
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": 4096,
-                "temperature": 0.7,
-                "top_p": 0.8
-            })
-            .to_string(),
-        )
-        .send()?;
+    // First sample: logits are from eval_chunks' last internal decode, use -1 for last token
+    let mut logits_idx: i32 = -1;
 
-    if !resp.status().is_success() {
-        anyhow::bail!("[ERROR] API request failed with status: {}", resp.status());
+    for _ in 0..max_tokens {
+        let token = sampler.sample(&ctx, logits_idx);
+        sampler.accept(token);
+
+        if model.is_eog_token(token) {
+            break;
+        }
+
+        let piece = model.token_to_piece(token, &mut decoder, true, None)?;
+        output.push_str(&piece);
+        print!("{piece}");
+        std::io::stdout().flush()?;
+
+        batch.clear();
+        batch.add(token, n_cur, &[0], true)?;
+        n_cur += 1;
+
+        ctx.decode(&mut batch)
+            .with_context(|| "decode failed during generation")?;
+
+        // Subsequent samples use index 0 in our single-token batch
+        logits_idx = 0;
     }
 
-    let data: serde_json::Value = resp.json()?;
-    info!(
-        "[SCAN] Raw API response keys: {:?}",
-        data.as_object().map(|o| o.keys().collect::<Vec<_>>())
-    );
-
-    if let Some(choices) = data
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-    {
-        if let Some(finish_reason) = choices.get("finish_reason") {
-            info!("[SCAN] Finish reason: {}", finish_reason);
-        }
-        if let Some(message) = choices.get("message").and_then(|m| m.as_object()) {
-            if let Some(role) = message.get("role") {
-                info!("[SCAN] Message role: {}", role);
-            }
-            if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                info!("[SCAN] Content length: {}", content.len());
-                print_description(content);
-            }
-        }
-    } else {
-        info!("[SCAN] Full response: {}", data);
-    }
-
-    Ok(())
-}
-
-fn print_description(content: &str) {
+    println!();
     println!("\n{}", "=".repeat(60));
     println!("[DESC] SCREENSHOT DESCRIPTION:");
     println!("{}", "=".repeat(60));
-    termimad::print_text(content);
+    termimad::print_text(&output);
     println!("{}\n", "=".repeat(60));
+
+    Ok(())
 }
