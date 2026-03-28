@@ -6,24 +6,24 @@
 
 use anyhow::{Context, Result};
 use image::imageops::FilterType;
-use llama_cpp_2::LogOptions;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::mtmd::{
-    MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText, mtmd_default_marker,
+    mtmd_default_marker, MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText,
 };
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::send_logs_to_tracing;
+use llama_cpp_2::LogOptions;
 use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use tracing::info;
 
-const MODEL_REPO: &str = "unsloth/Qwen3.5-0.8B-GGUF";
-const MODEL_FILE: &str = "Qwen3.5-0.8B-Q4_K_M.gguf";
+const MODEL_REPO: &str = "unsloth/Qwen3.5-4B-GGUF";
+const MODEL_FILE: &str = "Qwen3.5-4B-Q4_K_M.gguf";
 const MMPROJ_FILE: &str = "mmproj-F16.gguf";
 
 fn main() -> Result<()> {
@@ -40,7 +40,7 @@ fn main() -> Result<()> {
 fn model_dir() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Safety: CARGO_MANIFEST_DIR always points inside a workspace, so parent() is guaranteed.
-    manifest.parent().unwrap().join("Qwen3.5-0.8B-GGUF")
+    manifest.parent().unwrap().join("Qwen3.5-4B-GGUF")
 }
 
 fn ensure_model() -> Result<(PathBuf, PathBuf)> {
@@ -172,7 +172,7 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
     // Build prompt with media marker
     let marker = mtmd_default_marker();
     let prompt = format!(
-        "<|im_start|>user\n{marker}\nDescribe what you see on this screen. What is shown, what is happening, and what elements are visible?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        "<|im_start|>system\nYou are a precise visual analyst. Respond in well-structured plain text. Be specific about positions (top, center, bottom-left, etc.), colors, and text you can read. Never fabricate details you cannot see.<|im_end|>\n<|im_start|>user\n{marker}\nAnalyze this screenshot in detail. Describe:\n1. **Application/Context**: What application or website is shown? What is its purpose?\n2. **Layout**: Describe the major UI regions (header, sidebar, main content, footer, etc.).\n3. **Key Content**: What text, images, or data is prominently displayed? Quote any readable text.\n4. **Interactive Elements**: Note buttons, menus, input fields, or other controls visible.\n5. **State**: Is anything selected, highlighted, loading, or showing an error?\nBe concise but thorough.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
     );
 
     let text_input = MtmdInputText {
@@ -199,11 +199,11 @@ fn describe_screen(model_path: &Path, mmproj_path: &Path, img_path: &Path) -> Re
         .with_context(|| "Failed to evaluate multimodal chunks")?;
 
     // Generate tokens
-    let max_tokens = 1024_i32;
+    let max_tokens = 2048_i32;
     let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::penalties(512, 1.5, 0.0, 0.0),
-        LlamaSampler::temp(0.7),
-        LlamaSampler::top_p(0.8, 1),
+        LlamaSampler::penalties(256, 1.3, 0.0, 0.0),
+        LlamaSampler::temp(0.4),
+        LlamaSampler::top_p(0.9, 1),
         LlamaSampler::dist(1234),
     ]);
 
