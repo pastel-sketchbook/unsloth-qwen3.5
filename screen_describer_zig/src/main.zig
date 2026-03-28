@@ -11,8 +11,8 @@ const c = @cImport({
     @cInclude("mtmd-helper.h");
 });
 
-const model_repo = "unsloth/Qwen3.5-0.8B-GGUF";
-const model_file = "Qwen3.5-0.8B-Q4_K_M.gguf";
+const model_repo = "unsloth/Qwen3.5-4B-GGUF";
+const model_file = "Qwen3.5-4B-Q4_K_M.gguf";
 const mmproj_file = "mmproj-F16.gguf";
 
 pub fn main() !void {
@@ -44,8 +44,9 @@ fn modelDir(allocator: std.mem.Allocator) ![:0]const u8 {
     var up3 = try up2.openDir("..", .{});
     defer up3.close();
 
-    const real = try up3.realpathAlloc(allocator, "Qwen3.5-0.8B-GGUF");
-    return try allocator.dupeZ(u8, real);
+    const root = try up3.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    return try std.fs.path.joinZ(allocator, &.{ root, "Qwen3.5-4B-GGUF" });
 }
 
 fn ensureModel(allocator: std.mem.Allocator) !struct { [:0]const u8, [:0]const u8 } {
@@ -183,7 +184,7 @@ fn describeScreen(allocator: std.mem.Allocator, model_path: [:0]const u8, mmproj
     const marker_slice = std.mem.span(marker);
     const prompt_raw = try std.fmt.allocPrint(
         allocator,
-        "<|im_start|>user\n{s}\nDescribe what you see on this screen. What is shown, what is happening, and what elements are visible?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "<|im_start|>system\nYou are a precise visual analyst. Respond in well-structured plain text. Be specific about positions (top, center, bottom-left, etc.), colors, and text you can read. Never fabricate details you cannot see.<|im_end|>\n<|im_start|>user\n{s}\nAnalyze this screenshot in detail. Describe:\n1. **Application/Context**: What application or website is shown? What is its purpose?\n2. **Layout**: Describe the major UI regions (header, sidebar, main content, footer, etc.).\n3. **Key Content**: What text, images, or data is prominently displayed? Quote any readable text.\n4. **Interactive Elements**: Note buttons, menus, input fields, or other controls visible.\n5. **State**: Is anything selected, highlighted, loading, or showing an error?\nBe concise but thorough.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
         .{marker_slice},
     );
     defer allocator.free(prompt_raw);
@@ -223,13 +224,13 @@ fn describeScreen(allocator: std.mem.Allocator, model_path: [:0]const u8, mmproj
     const sampler = c.llama_sampler_chain_init(sparams) orelse return error.SamplerInitFailed;
     defer c.llama_sampler_free(sampler);
 
-    c.llama_sampler_chain_add(sampler, c.llama_sampler_init_penalties(512, 1.5, 0.0, 0.0));
-    c.llama_sampler_chain_add(sampler, c.llama_sampler_init_temp(0.7));
-    c.llama_sampler_chain_add(sampler, c.llama_sampler_init_top_p(0.8, 1));
+    c.llama_sampler_chain_add(sampler, c.llama_sampler_init_penalties(256, 1.3, 0.0, 0.0));
+    c.llama_sampler_chain_add(sampler, c.llama_sampler_init_temp(0.4));
+    c.llama_sampler_chain_add(sampler, c.llama_sampler_init_top_p(0.9, 1));
     c.llama_sampler_chain_add(sampler, c.llama_sampler_init_dist(1234));
 
     // Generate tokens
-    const max_tokens: usize = 1024;
+    const max_tokens: usize = 2048;
     var output = try std.ArrayList(u8).initCapacity(allocator, 1024);
     defer output.deinit(allocator);
 
