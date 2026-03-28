@@ -6,6 +6,9 @@
 /screen_describer_zig/.zig-cache/
 /screen_describer_zig/zig-out/
 
+# Generated artifacts
+/bench.md
+
 # Environment files
 .env
 .env.*

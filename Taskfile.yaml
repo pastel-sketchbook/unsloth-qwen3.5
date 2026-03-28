@@ -18,11 +18,16 @@ tasks:
     cmds:
       - zig build run
 
+  build:rust:
+    desc: Build the Rust screen describer (release)
+    cmds:
+      - cargo build --release --manifest-path screen_describer/Cargo.toml
+
   build:zig:
-    desc: Build the Zig screen describer
+    desc: Build the Zig screen describer (release)
     dir: screen_describer_zig
     cmds:
-      - zig build
+      - zig build -Doptimize=ReleaseFast
 
   fmt:zig:
     desc: Format Zig code
@@ -76,3 +81,16 @@ tasks:
       - fmt
       - lint
       - loc
+
+  bench:
+    desc: Benchmark Rust vs Zig screen describer (requires hyperfine)
+    deps:
+      - build:rust
+      - build:zig
+    cmds:
+      - hyperfine
+          --warmup 1
+          --runs 3
+          --export-markdown bench.md
+          -n Rust './screen_describer/target/release/screen_describer'
+          -n Zig  './screen_describer_zig/zig-out/bin/screen_describer'
